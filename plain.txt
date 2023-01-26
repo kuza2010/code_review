@@ -1,0 +1,161 @@
+package ru.surf;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Stream;
+
+
+/*
+ * The program receives path to index. Then we create executor and submit tasks.
+ * We count how many times do we see the word in each files inder provided folder.
+ *
+ * Let's say:
+ * |-dir
+ *   |-file.txt   (content: Hello World)
+ *   |-file2.txt  (content: Hello Buddies)
+ *
+ * The result:
+ * ____________________________
+ *      K      |       V
+ * ============================
+ *   Hello -   | [{count: 1; filePath: file.txt}, {count: 1; filePath: file2.txt}]
+ *   World -   | [{count: 1; filePath: file.txt}, {count: 1; filePath: file2.txt}],
+ *   Buddies - | [{count: 1; filePath: file2.txt}],
+ */
+
+public class Index {
+    ExecutorService pool;                           // make private
+    // not thread safe Map + we do not use TreeMap features,
+    // probably we want to use ConcurrentSkipListMap
+    TreeMap<String, List<Pointer>> invertedIndex;   // make private
+
+    public Index(ExecutorService pool) {
+        this.pool = pool;
+        invertedIndex = new TreeMap<>();    // use the same strategy with 'this'
+        // this.invertedIndex = new TreeMap<>();
+    }
+
+    // Why it called indexAllTxtInPath
+    // If we want only .txt files - we need a file filter
+    // If we want to index all files - change naming
+    public void indexAllTxtInPath(String pathToDir) throws IOException {
+        // good to check folder exist and contains at least 1 file
+        Path of = Path.of(pathToDir);
+
+        // probably 2 is too low i'd say: Runtime.getRuntime().availableProcessors();
+        // i prefer to pass size into constructor, why Index set this value itself
+        BlockingQueue<Path> files = new ArrayBlockingQueue<>(2);
+
+        // put it here and repeat files.size() times
+        // pool.submit(new IndexTask(files));
+
+        // i like using simple for each here Files.list(of).collect(Collectors.toList())
+        try (Stream<Path> stream = Files.list(of)) {
+            // 'files::add' trow an IllegalStateException use files::offer to block
+            // by idea it will block the caller of indexAllTxtInPath method
+            stream.forEach(files::add);
+        }
+
+        // remove all this invocations
+        pool.submit(new IndexTask(files));
+        pool.submit(new IndexTask(files));
+        pool.submit(new IndexTask(files));
+    }
+
+    // 1. Return copy of original map, because we can modify original
+    // 2. We can return Map instaed of TreeMap, i.e. return Collections.unmodifiableMap(invertedIndex);
+    public TreeMap<String, List<Pointer>> getInvertedIndex() {
+        //  TreeMap<String, List<Pointer>> map  = new TreeMap<>();
+        //  map.putAll(invertedIndex);
+        //  return map;
+        return invertedIndex;
+    }
+
+    // naming with lowercase, getRelevantDocumentsForTerm
+    public List<Pointer> GetRelevantDocuments(String term) {
+        // please use getOrDefault
+        return invertedIndex.get(term);
+    }
+
+    public Optional<Pointer> getMostRelevantDocument(String term) {
+        return invertedIndex.get(term).stream().max(Comparator.comparing(o -> o.count)); // possible NullPointerEx
+        // return invertedIndex.getOrDefault(term, Collections.emptyList())
+    }
+
+
+    /**
+     * [IMHO] i like separate class
+     * Since we are work in multithreading i prefer use immutable classes
+     */
+    static class Pointer {
+        private Integer count;
+        private String filePath;
+
+        public Pointer(Integer count, String filePath) {
+            this.count = count;
+            this.filePath = filePath;
+        }
+
+        // add getters
+
+        @Override
+        public String toString() {
+            return "{" + "count=" + count + ", filePath='" + filePath + '\'' + '}';
+        }
+    }
+
+
+    // [IMHO] i like separate class
+    class IndexTask implements Runnable {
+
+        private final BlockingQueue<Path> queue;
+
+        public IndexTask(BlockingQueue<Path> queue) {
+            this.queue = queue;
+        }
+
+        @Override
+        public void run() {
+            try {
+                Path take = queue.take();
+                // I dont know but probably we need proper encoding here
+                List<String> strings = Files.readAllLines(take);
+
+                strings.stream()
+                        // chane str -> line
+                        .flatMap(str -> Stream.of(str.split(" ")))
+                        // [IMHO] change (k,v) names to something that have logic
+                        .forEach(word -> invertedIndex.compute(word, (k, v) -> {
+                            // List.of is not modifiable
+                            if (v == null) return List.of(new Pointer(1, take.toString()));
+                            else {
+                                ArrayList<Pointer> pointers = new ArrayList<>();
+
+                                if (v.stream().noneMatch(pointer -> pointer.filePath.equals(take.toString()))) {
+                                    pointers.add(new Pointer(1, take.toString()));
+                                }
+
+                                v.forEach(pointer -> {
+                                    if (pointer.filePath.equals(take.toString())) {
+                                        pointer.count = pointer.count + 1;
+                                    }
+                                });
+
+                                pointers.addAll(v);
+
+                                return pointers;
+                            }
+
+                        }));
+
+            } catch (InterruptedException | IOException e) {
+                // log error and handle separately
+                // we should not hide errors here, rethrow
+                throw new RuntimeException();
+            }
+        }
+    }
+}
