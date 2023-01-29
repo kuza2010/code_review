@@ -137,7 +137,7 @@ class PossibleSolution {
                                 }
                             }));
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                    e.printStackTrace();
                 } catch (IOException e) {
                     // read file error
                     e.printStackTrace();
